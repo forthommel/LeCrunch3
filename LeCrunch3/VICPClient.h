@@ -75,13 +75,10 @@
 #include <sys/socket.h>
 
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
+#include <string>
 
 #define ATLTRACE
 #define ATLTRACE2
-#define MAX_DEVICE_ADDR_LEN 255  // max. length of a device address string (dns address/dotted ip address)
-#define MAX_ERROR_MSG_LEN 255    // max. length of a device address string (dns address/dotted ip address)
 
 class CVICPClient {
 public:
@@ -97,17 +94,17 @@ public:
   bool disconnectFromDevice();  ///< disconnect from a network device
   void deviceClear();           ///< clear the device
   /// serial poll byte
-  /// \note Uses the new Out-Of-Band signalling technique if supported, else use the original 'in-band' technique.
+  /// \note uses the new Out-Of-Band signalling technique if supported, else use the original 'in-band' technique.
   int serialPoll();
 
   //------------------------------------------------------------------------------------------
   // out-of band data request, used for serial polling and possibly other features in the future
-  bool oobDataRequest(char requestType, unsigned char *response);
+  bool oobDataRequest(char requestType, unsigned char* response);
 
   /// send a block of data to a network device
   /// \return false on error status
   bool sendDataToDevice(
-      const char *message, int bytesToSend, bool eoiTermination, bool deviceClear = false, bool serialPoll = false);
+      const char* message, int bytesToSend, bool eoiTermination, bool deviceClear = false, bool serialPoll = false);
 
 private:
   /// Return the next sequence number in the range 1..255 (Note that zero is omitted intentionally)
@@ -119,7 +116,7 @@ private:
   /// send a 'small' block of data to a network device
   /// \return true on error status
   bool sendSmallDataToDevice(
-      const char *message, int bytesToSend, bool eoiTermination, bool deviceClear, bool serialPoll);
+      const char* message, int bytesToSend, bool eoiTermination, bool deviceClear, bool serialPoll);
 
 public:
   /// dump data until the next header is found
@@ -129,15 +126,15 @@ public:
   /// read block of data from a network device
   /// \note if bFlush is requested then ignore replyBuf and userBufferSizeBytes and read all remaining data
   /// from the current block (i.e. up to the start of the next header)
-  uint32_t readDataFromDevice(char *replyBuf, int userBufferSizeBytes, bool bFlush = false);
+  uint32_t readDataFromDevice(char* replyBuf, int userBufferSizeBytes, bool bFlush = false);
 
-  bool readHeaderFromDevice(uint32_t &blockSize,
-                            bool &eoiTerminated,
-                            bool &srqStateChanged,
-                            int &seqNum);  ///< read header a network device
+  bool readHeaderFromDevice(uint32_t& blockSize,
+                            bool& eoiTerminated,
+                            bool& srqStateChanged,
+                            int& seqNum);  ///< read header a network device
 
 public:
-  char m_deviceAddress[MAX_DEVICE_ADDR_LEN];
+  std::string m_deviceAddress;
   float m_currentTimeout{10};      ///< current timeout time (seconds)
   bool m_remoteMode{false};        ///< if TRUE, device is in remote mode
   bool m_localLockout{false};      ///< if TRUE, device is in local lockout mode
@@ -153,10 +150,9 @@ public:
     NetWaitingForData,
     NetErrorState
   } m_readState{readstate::NetWaitingForHeader};  ///< current state of read 'state machine'
-  bool m_bFlushUnreadResponses{true};      ///< if true, unread responses are flushed (emulate GPIB 488.2 behaviour)
-  char m_lastErrorMsg[MAX_ERROR_MSG_LEN];  // last error message
-  bool m_bErrorFlag{false};                ///< if true, error has been observed
-  bool m_bVICPVersion1aSupported{false};   ///< version 1a of the VICP protocol supported (seq. numbers and OOB data)
+  bool m_bFlushUnreadResponses{true};     ///< if true, unread responses are flushed (emulate GPIB 488.2 behaviour)
+  bool m_bErrorFlag{false};               ///< if true, error has been observed
+  bool m_bVICPVersion1aSupported{false};  ///< version 1a of the VICP protocol supported (seq. numbers and OOB data)
 
 private:
   int m_lastSequenceNumber{1};  ///< last used sequence value
