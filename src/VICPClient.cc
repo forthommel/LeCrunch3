@@ -6,67 +6,6 @@
 // Started:		June 2003
 //				Published on SourceForge under LeCroyVICP project, Sept 2003
 //------------------------------------------------------------------------------------------
-//
-// Description:
-//
-//		This file contains a Client-side implementation of the VICP network communications
-//		protocol used to control LeCroy Digital Oscilloscopes (DSOs).
-//
-//		This file is intended to be ultimately as platform independent as possible, but at
-//		present has only been compiled & tested under Visual C++ 6.0 on a Windows platform.
-//
-// VICP Protocol Description/History:
-//
-//		The VICP Protocol has been around since 1997/98. It did not change in any way between it's
-//		conception, and June 2003, when a previously reserved field in the header was assigned.
-//		This field, found at byte #2, is now used to allow the client-end of a VICP communication
-//		to detect 'out of sync' situations, and therefore allows the GPIB 488.2 'Unread Response'
-//		mechanism to be emulated.
-//
-//      These extensions to the original protocol did not cause a version number change, and are
-//		referred to as version 1a. It was decided not to bump the version number to reduce the
-//		impact on clients, many of which are looking for a version number of 1.
-//		Clients and servers detect protocol version 1a by examining the sequence number field,
-//		it should be 0 for version 1 of the protocol (early clients), or non-zero for v1a.
-//
-//
-// VICP Headers:
-//
-//	    Byte	Description
-//	    ------------------------------------------------
-//		 0		Operation
-//		 1		Version		1 = version 1
-//		 2		Sequence Number { 1..255 }, (was unused until June 2003)
-//		 3		Unused
-//	 	 4		Block size, LSB	 (not including this header)
-//		 5		Block size
-//		 6		Block size
-//		 7		Block size, MSB
-//
-//	Operation bits:
-//
-//		Bit		Mnemonic	Purpose
-//		-----------------------------------------------
-//		D7		DATA		Data block (D0 indicates with/without EOI)
-//		D6		REMOTE		Remote Mode
-//		D5		LOCKOUT		Local Lockout (Lockout front panel)
-//		D4		CLEAR		Device Clear (if sent with data, clear occurs before block is passed to parser)
-//		D3		SRQ			SRQ (Device -> PC only)
-//		D2		SERIALPOLL  Request a serial poll
-//		D1		Reserved	Reserved for future expansion
-//		D0		EOI			Block terminated in EOI
-//
-// Known Limitations:
-//
-// Outstanding Issues
-//
-// Dependencies
-//		- Try to keep to absolute minimum to allow porting to other operating systems.
-//		  Avoid ATL, and especially MFC, currently only relies upon winsock.h and the standard
-//		  C library includes.
-//
-//------------------------------------------------------------------------------------------
-//
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -79,13 +18,11 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 #include "LeCrunch3/VICPClient.h"
 
-#define SERVER_PORT_NUM 1861  // port # registered with IANA for lecroy-vicp
-#define IO_NET_HEADER_SIZE 8  // size of network header
-#define SMALL_DATA_BUFSIZE 8192
-#define CONNECT_TIMEOUT_SECS 2L
+using namespace std::string_literals;
 
 /// GPIB status bit vector (global variable ibsta and wait mask)
 enum ibsta_t : uint16_t {
@@ -140,22 +77,20 @@ enum VICPOperation : uint8_t {
 /// Header Version
 enum HeaderVersion { HEADER_VERSION1 = 0x01 };
 
-CVICPClient::CVICPClient() {}
+VICPClient::VICPClient(const std::string& device_address) : device_address_(device_address) {}
 
-//------------------------------------------------------------------------------------------
-CVICPClient::~CVICPClient() { disconnectFromDevice(); }
+VICPClient::~VICPClient() { disconnectFromDevice(); }
 
-//------------------------------------------------------------------------------------------
-u_long CVICPClient::GetDeviceIPAddress() {
+uint32_t VICPClient::GetDeviceIPAddress() {
   // loop through the address string and try to identify whether it's a dotted static IP
   // address, or a DNS address
   bool bOnlyDigitsAndDots = true;
   size_t dotCount = 0;
-  for (size_t i = 0; i < m_deviceAddress.size(); ++i) {
-    if (m_deviceAddress[i] == '.')  // count the dots
+  for (size_t i = 0; i < device_address_.size(); ++i) {
+    if (device_address_[i] == '.')  // count the dots
       ++dotCount;
-    if (!isdigit(m_deviceAddress[i]) &&
-        m_deviceAddress[i] != '.')  // if the character is not a digit and not a dot then assume a DNS name
+    if (!isdigit(device_address_[i]) &&
+        device_address_[i] != '.')  // if the character is not a digit and not a dot then assume a DNS name
       bOnlyDigitsAndDots = false;
   }
 
@@ -163,11 +98,11 @@ u_long CVICPClient::GetDeviceIPAddress() {
       dotCount == 3) {  // if only digits and dots were found then assume that it's a static IP address
     in_addr ipAddr;
     int b1 = 0, b2 = 0, b3 = 0, b4 = 0;
-    if (int ret = ::sscanf(m_deviceAddress.data(), "%d.%d.%d.%d", &b1, &b2, &b3, &b4); ret != 4) {
+    if (int ret = ::sscanf(device_address_.data(), "%d.%d.%d.%d", &b1, &b2, &b3, &b4); ret != 4) {
       std::cerr << "GetDeviceIPAddress() sscanf error ret=" << ret << "/4" << std::endl;
       m_bErrorFlag = true;
     }
-    ::inet_pton(AF_INET, m_deviceAddress.data(), &ipAddr.s_addr);
+    ::inet_pton(AF_INET, device_address_.data(), &ipAddr.s_addr);
     return ipAddr.s_addr;
   }
 
@@ -175,13 +110,11 @@ u_long CVICPClient::GetDeviceIPAddress() {
   return GetIPFromDNS();
 }
 
-//------------------------------------------------------------------------------------------
-// Lookup the IP address of a DNS name
-u_long CVICPClient::GetIPFromDNS() {
+uint32_t VICPClient::GetIPFromDNS() {
   struct in_addr addr;
   int ret, *intp;
   char** p;
-  struct hostent* hp = gethostbyname(m_deviceAddress.data());
+  struct hostent* hp = ::gethostbyname(device_address_.data());
   if (hp != nullptr) {
     // We assume that if there is more than 1 address, there might be
     // a server conflict.
@@ -195,13 +128,15 @@ u_long CVICPClient::GetIPFromDNS() {
   return 0;
 }
 
-//------------------------------------------------------------------------------------------
-// initialize the socket (doesn't require remote device to be connected or responding)
-bool CVICPClient::openSocket() {
+void VICPClient::setTimeout(float timeout) {
+  timeout_ = ::timeval{(long)timeout, ((long)(timeout * 1'000'000L)) % 1'000'000L};
+}
+
+bool VICPClient::openSocket() {
   ATLTRACE("Opening Socket:\n");
 
   // create client's socket
-  if (m_socketFd = socket(AF_INET, SOCK_STREAM, 0); m_socketFd == -1) {
+  if (fd_ = socket(AF_INET, SOCK_STREAM, 0); fd_ == -1) {
     std::cerr << "socket() failed, error code = " << errno << std::endl;
     m_bErrorFlag = true;
     // 10061 = WSAECONNREFUSED
@@ -211,14 +146,14 @@ bool CVICPClient::openSocket() {
   // disable the TCP/IP 'NAGLE' algorithm that buffers a bunch of
   // packets before sending them.
   const int just_say_no = 1;
-  if (0 != setsockopt(m_socketFd, IPPROTO_TCP, TCP_NODELAY, (char*)&just_say_no, sizeof(just_say_no))) {
+  if (0 != setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, (char*)&just_say_no, sizeof(just_say_no))) {
     printf("Error: Could not set socket option 'TCP_NODELAY'\n");
     return false;
   }
 
   // enable SO_LINGER to allow hard closure of sockets (LINGER enabled, but with timeout of zero)
   linger lingerStruct = {1, 0};
-  if (0 != setsockopt(m_socketFd, SOL_SOCKET, SO_LINGER, (char*)&lingerStruct, sizeof(lingerStruct))) {
+  if (0 != setsockopt(fd_, SOL_SOCKET, SO_LINGER, (char*)&lingerStruct, sizeof(lingerStruct))) {
     printf("Error: Could not set socket option 'SO_LINGER'\n");
     return false;
   }
@@ -226,26 +161,18 @@ bool CVICPClient::openSocket() {
   return true;
 }
 
-//------------------------------------------------------------------------------------------
-// connect to a network device
-// address is extracted from m_deviceAddress (specified during construction of base class)
-bool CVICPClient::connectToDevice() {
-  // if not yet connected to scope...
-  if (!m_connectedToScope) {
+bool VICPClient::connectToDevice() {
+  if (!m_connectedToScope) {  // if not yet connected to scope...
     ATLTRACE("Connecting:\n");
-
-    // lookup the IP address of the device
-    u_long addr = GetDeviceIPAddress();
-
-    // initialize the socket
-    openSocket();
+    uint32_t addr = GetDeviceIPAddress();  // lookup the IP address of the device
+    openSocket();                          // initialize the socket
 
     // ensure that the connect command will not block
     /*unsigned long argp = 1;  // 1 = enable non-blocking behaviour
-    ioctlsocket(m_socketFd, FIONBIO, &argp);*/
+    ioctlsocket(fd_, FIONBIO, &argp);*/
 
     // try to connect to server (scope)
-    int sockAddrSize = sizeof(sockaddr);  // size of socket address structures
+    const int sockAddrSize = sizeof(sockaddr);  // size of socket address structures
 
     // build server socket address
     m_serverAddr.sin_family = AF_INET;
@@ -259,20 +186,19 @@ bool CVICPClient::connectToDevice() {
       return false;
     }
 
-    int connectStatus = connect(m_socketFd, (sockaddr*)&m_serverAddr, sockAddrSize);
+    int connectStatus = ::connect(fd_, (sockaddr*)&m_serverAddr, sockAddrSize);
 
     // after a connect in non-blocking mode a 'select' is require to
     // determine the outcome of the connect attempt
-    ::fd_set writeSet = {1, {m_socketFd}};
+    ::fd_set writeSet = {1, {fd_}};
     ::timeval timeVal{CONNECT_TIMEOUT_SECS, 0L};
-    int numReady = ::select(m_socketFd, nullptr, &writeSet, nullptr, &timeVal);
+    int numReady = ::select(fd_, nullptr, &writeSet, nullptr, &timeVal);
 
     // restore blocking behaviour
     /*argp = 0;  // 0 = enable blocking behaviour
-    ioctlsocket(m_socketFd, FIONBIO, &argp);*/
+    ioctlsocket(fd_, FIONBIO, &argp);*/
 
-    // see if the connection succeeded
-    if (numReady == 1) {
+    if (numReady == 1) {  // see if the connection succeeded
       ATLTRACE("Connect Succeeded\n");
       m_connectedToScope = true;
     } else {
@@ -285,42 +211,32 @@ bool CVICPClient::connectToDevice() {
       return false;
     }
   }
-
   return true;
 }
 
-//------------------------------------------------------------------------------------------
-// disconnect from a network device
-bool CVICPClient::disconnectFromDevice() {
+bool VICPClient::disconnectFromDevice() {
   ATLTRACE("Disconnecting:\n");
-
   if (m_connectedToScope) {
     m_readState = NetWaitingForHeader;  // reset any partial read operation
-    if (close(m_socketFd) != 0) {
+    if (::close(fd_) != 0) {
       std::cerr << "close() failed, error code = " << errno << std::endl;
       m_bErrorFlag = true;
     }
-    m_socketFd = -1;
+    fd_ = -1;
     m_connectedToScope = false;
     m_bVICPVersion1aSupported = false;
   }
-
   return true;
 }
 
-//------------------------------------------------------------------------------------------
-// clear the device
-void CVICPClient::deviceClear() {
+void VICPClient::deviceClear() {
   sendDataToDevice("", 0, 0, true /* device clear */);
   usleep(100'000);  // TODO: remove when 'RebootScope' bug is fixed
   disconnectFromDevice();
   connectToDevice();
 }
 
-//------------------------------------------------------------------------------------------
-// return the serial poll byte. Uses the new Out-Of-Band signalling technique if
-// supported, else use the original 'in-band' technique.
-int CVICPClient::serialPoll() {
+int VICPClient::serialPoll() {
   if (m_bVICPVersion1aSupported) {
     unsigned char oobResponse = 0x00;
     if (oobDataRequest('S', &oobResponse))  // 'S' == Serial Poll
@@ -330,64 +246,51 @@ int CVICPClient::serialPoll() {
     std::cerr << "serialPoll failed to receive OOB response from DSO" << std::endl;
     m_bErrorFlag = true;
     return oobResponse;
-  } else {
-    // request the serial poll using an in-band technique
-    sendDataToDevice("", 0, false /* EOI */, false /* device clear */, true /* request serial poll */);
-
-    // read the single serial-poll byte
-#define SPOLLBUFSIZE 2
-    char buf[SPOLLBUFSIZE + 1];
-    int bytesRead = -1;
-    bytesRead = readDataFromDevice(buf, SPOLLBUFSIZE);
-    if (bytesRead >= 1) {
-      m_ibsta = CMPL;
-      return buf[0];
-    } else {
-      m_ibsta = ERR;
-      m_iberr = EABO;  // The serial poll response could not be read within the serial poll timeout period.
-      return 0;
-    }
   }
+  // request the serial poll using an in-band technique
+  sendDataToDevice(""s, false /* EOI */, false /* device clear */, true /* request serial poll */);
+
+  char buf[SPOLLBUFSIZE + 1];
+  if (int bytesRead = readDataFromDevice(buf, SPOLLBUFSIZE); bytesRead >= 1) {  // read the single serial-poll byte
+    m_ibsta = CMPL;
+    return buf[0];
+  }
+  m_ibsta = ERR;
+  m_iberr = EABO;  // The serial poll response could not be read within the serial poll timeout period.
+  return 0;
 }
 
-bool CVICPClient::oobDataRequest(char requestType, unsigned char* response) {
+bool VICPClient::oobDataRequest(char requestType, unsigned char* response) {
   char oobDataTest[1] = {requestType};
-  int bytesSent = send(m_socketFd, (char*)oobDataTest, 1, MSG_OOB);
-
-  ::timeval timeVal{(long)m_currentTimeout, ((long)(m_currentTimeout * 1'000'000L)) % 1'000'000L};
+  int bytesSent = ::send(fd_, (char*)oobDataTest, 1, MSG_OOB);
 
   // if there is no sign of a header, get out quick (timeout)
   // Note that we don't look for in-band data, only OOB data (which appears in the exception record)
-  ::fd_set exceptSet = {1, {m_socketFd}};
-  int numReady = ::select(m_socketFd, NULL, NULL, &exceptSet, &timeVal);
+  ::fd_set exceptSet = {1, {fd_}};
+  int numReady = ::select(fd_, NULL, NULL, &exceptSet, &timeout_);
   char buf[1] = {0x00};
-  if (FD_ISSET(m_socketFd, &exceptSet)) {
-    int bytesReceived = ::recv(m_socketFd, (char*)buf, 1, MSG_OOB);
+  if (FD_ISSET(fd_, &exceptSet)) {
+    int bytesReceived = ::recv(fd_, (char*)buf, 1, MSG_OOB);
     *response = buf[0];
     return true;
-  } else {
-    return false;
   }
+  return false;
 }
 
-bool CVICPClient::sendDataToDevice(
-    const char* message, int bytesToSend, bool eoiTermination, bool deviceClear, bool serialPoll) {
-  std::array<unsigned char, IO_NET_HEADER_SIZE> headerBuf;
+bool VICPClient::sendDataToDevice(const std::string& message, bool eoiTermination, bool deviceClear, bool serialPoll) {
+  if (m_bFlushUnreadResponses &&
+      m_readState != NetWaitingForHeader)  // handle cases where the user didn't read all data from a previous query
+    readDataFromDevice(nullptr, -1, true);    // flush
 
-  // handle cases where the user didn't read all data from a previous query
-  if (m_bFlushUnreadResponses && m_readState != NetWaitingForHeader)
-    readDataFromDevice(NULL, -1, true);  // flush
+  if (message.size() <
+      SMALL_DATA_BUFSIZE)  // if the block is relatively small, send header + data with one 'send' command (faster)
+    return sendSmallDataToDevice(message, eoiTermination, deviceClear, serialPoll);
 
-  // if the block is relatively small, send header + data with one 'send' command (faster)
-  if (bytesToSend < SMALL_DATA_BUFSIZE)
-    return sendSmallDataToDevice(message, bytesToSend, eoiTermination, deviceClear, serialPoll);
-
-  // clear status words
-  m_ibsta &= (RQS);  // preserve SRQ
-  m_ibcntl = 0;
+  m_ibsta &= RQS;  // preserve SRQ
+  m_ibcntl = 0;      // clear status words
   m_iberr = 0;
 
-  // send header
+  std::array<unsigned char, IO_NET_HEADER_SIZE> headerBuf;  // send header
   headerBuf[0] = OPERATION_DATA;
   if (eoiTermination)
     headerBuf[0] |= OPERATION_EOI;
@@ -398,37 +301,35 @@ bool CVICPClient::sendDataToDevice(
   if (serialPoll)
     headerBuf[0] |= OPERATION_REQSERIALPOLL;
   headerBuf[1] = HEADER_VERSION1;
-  headerBuf[2] = GetNextSequenceNumber(headerBuf[0]);     // sequence number
-  headerBuf[3] = 0x00;                                    // unused
-  *((unsigned long*)&headerBuf[4]) = htonl(bytesToSend);  // message size
+  headerBuf[2] = GetNextSequenceNumber(headerBuf[0]);          // sequence number
+  headerBuf[3] = 0x00;                                         // unused
+  *reinterpret_cast<unsigned long*>(&headerBuf[4]) = ::htonl(message.size());  // message size
 
   ATLTRACE("sendDataToDevice: seq=%d eoi=%d ", headerBuf[2], eoiTermination);
 
-  if (int bytesSent = send(m_socketFd, (char*)headerBuf.data(), headerBuf.size(), 0); bytesSent != IO_NET_HEADER_SIZE) {
+  int bytesSent = 0;
+  if (bytesSent = ::send(fd_, headerBuf.data(), headerBuf.size(), 0); bytesSent != IO_NET_HEADER_SIZE) {
     std::cerr << "Could not send Net Header" << std::endl;
     m_bErrorFlag = true;
     m_ibsta |= ERR;
     ATLTRACE(" bytesSent=%d [%.20s] ERROR sending header\n", bytesSent, message);
     return false;
   }
-
-  // send contents of message
-  if (int bytesSent = send(m_socketFd, message, bytesToSend, 0); bytesSent == -1 || bytesSent != bytesToSend) {
+  if (bytesSent = ::send(fd_, message.data(), message.size(), 0);
+      bytesSent == -1 || bytesSent != message.size()) {  // send contents of message
     std::cerr << "Send error" << std::endl;
     m_bErrorFlag = true;
     m_ibsta |= ERR;
     ATLTRACE(" bytesSent=%d [%.20s] ERROR sending data\n", bytesSent, message);
     return false;
-  } else {
-    ATLTRACE(" bytesSent=%d [%.20s]\n", bytesSent, message);
-    m_ibsta = CMPL | CIC | TACS;
-    m_ibcntl = bytesSent;
   }
-
+  ATLTRACE(" bytesSent=%d [%.20s]\n", bytesSent, message);
+  m_ibsta = CMPL | CIC | TACS;
+  m_ibcntl = bytesSent;
   return true;
 }
 
-unsigned char CVICPClient::GetNextSequenceNumber(unsigned char flags) {
+unsigned char VICPClient::GetNextSequenceNumber(unsigned char flags) {
   m_lastSequenceNumber = m_nextSequenceNumber;  // we'll return the current sequence number
   if (flags & OPERATION_EOI) {                  // which then gets incremented if this block is EOI terminated
     ++m_nextSequenceNumber;
@@ -438,23 +339,22 @@ unsigned char CVICPClient::GetNextSequenceNumber(unsigned char flags) {
   return m_lastSequenceNumber;
 }
 
-unsigned char CVICPClient::GetLastSequenceNumber() { return m_lastSequenceNumber; }
+unsigned char VICPClient::GetLastSequenceNumber() { return m_lastSequenceNumber; }
 
-bool CVICPClient::sendSmallDataToDevice(
-    const char* message, int bytesToSend, bool eoiTermination, bool deviceClear, bool serialPoll) {
-  std::array<unsigned char, SMALL_DATA_BUFSIZE + IO_NET_HEADER_SIZE + 2> smallDataBuffer;
-  int bytesToSendWithHeader = bytesToSend + IO_NET_HEADER_SIZE;
+bool VICPClient::sendSmallDataToDevice(const std::string& message,
+                                       bool eoiTermination,
+                                       bool deviceClear,
+                                       bool serialPoll) {
+  std::array<unsigned char, SMALL_DATA_BUFSIZE + IO_NET_HEADER_SIZE + 2> smallDataBuffer{};
+  const size_t bytesToSendWithHeader = message.size() + IO_NET_HEADER_SIZE;
 
-  // copy message into data buffer
-  memcpy(&smallDataBuffer[IO_NET_HEADER_SIZE], message, bytesToSend);
+  memcpy(&smallDataBuffer[IO_NET_HEADER_SIZE], message.data(), message.size());  // copy message into data buffer
 
-  // clear status words
   m_ibsta &= (RQS);  // preserve SRQ
-  m_ibcntl = 0;
+  m_ibcntl = 0;      // clear status words
   m_iberr = 0;
 
-  // send header + data
-  smallDataBuffer[0] = OPERATION_DATA;
+  smallDataBuffer[0] = OPERATION_DATA;  // send header + data
   if (eoiTermination)
     smallDataBuffer[0] |= OPERATION_EOI;
   if (m_remoteMode)
@@ -464,13 +364,13 @@ bool CVICPClient::sendSmallDataToDevice(
   if (serialPoll)
     smallDataBuffer[0] |= OPERATION_REQSERIALPOLL;
   smallDataBuffer[1] = HEADER_VERSION1;
-  smallDataBuffer[2] = GetNextSequenceNumber(smallDataBuffer[0]);  // sequence number
-  smallDataBuffer[3] = 0x00;                                       // unused
-  *((unsigned long*)&smallDataBuffer[4]) = htonl(bytesToSend);     // message size
+  smallDataBuffer[2] = GetNextSequenceNumber(smallDataBuffer[0]);    // sequence number
+  smallDataBuffer[3] = 0x00;                                         // unused
+  *((unsigned long*)&smallDataBuffer[4]) = ::htonl(message.size());  // message size
 
   ATLTRACE("sendSmallDataToDevice: seq=%d eoi=%d ", smallDataBuffer[2], eoiTermination);
 
-  if (int bytesSent = send(m_socketFd, (char*)smallDataBuffer.data(), bytesToSendWithHeader, 0);
+  if (int bytesSent = send(fd_, smallDataBuffer.data(), bytesToSendWithHeader, 0);
       bytesSent != bytesToSendWithHeader) {
     std::cerr << "Could not send small data block (Header + Data)" << std::endl;
     m_bErrorFlag = true;
@@ -480,46 +380,43 @@ bool CVICPClient::sendSmallDataToDevice(
   } else {
     ATLTRACE(" bytesSent=%d [%.20s]\n", bytesSent, message);
     m_ibsta = CMPL | CIC | TACS;
-    m_ibcntl = bytesToSend;
+    m_ibcntl = message.size();
     return true;
   }
 }
 
-void CVICPClient::dumpData(int numBytes) {
+void VICPClient::dumpData(int numBytes) {
   std::cerr << "dumpData: Unread Response, dumping " << numBytes << " bytes" << std::endl;
-
   uint32_t bytesToGo = numBytes;
-  char* dumpBuf = (char*)malloc(m_maxBlockSize);
-  if (dumpBuf != NULL) {
-    while (bytesToGo > 0) {
-      int dumpBytesReceived = (uint32_t)recv(m_socketFd, dumpBuf, MIN(bytesToGo, (uint32_t)m_maxBlockSize), 0);
-      bytesToGo -= dumpBytesReceived;
-    }
-    free(dumpBuf);
+  if (m_maxBlockSize == 0)
+    return;
+  std::vector<char> dumpBuf(m_maxBlockSize);
+  while (bytesToGo > 0) {
+    const int dumpBytesReceived =
+        static_cast<uint32_t>(::recv(fd_, dumpBuf.data(), MIN(bytesToGo, (uint32_t)m_maxBlockSize), 0));
+    bytesToGo -= dumpBytesReceived;
   }
 }
 
-uint32_t CVICPClient::readDataFromDevice(char* replyBuf, int userBufferSizeBytes, bool bFlush) {
+uint32_t VICPClient::readDataFromDevice(char* replyBuf, int userBufferSizeBytes, bool bFlush) {
   static uint32_t srcBlockSizeBytes = 0, srcBlockBytesRead = 0;
   static bool srcBlockEOITerminated = false, srcBlockSRQStateChanged = false;
   int userBufferBytesRead = 0;  // # bytes placed in user buffer
   uint32_t bytesReceived = 0;
   char* bufCopy = replyBuf;
 
-  // clear status words
-  m_ibsta &= (RQS);  // preserve SRQ
-  m_ibcntl = m_iberr = 0;
+  m_ibsta &= (RQS);        // preserve SRQ
+  m_ibcntl = m_iberr = 0;  // clear status words
 
   if (replyBuf != nullptr)  // ensure that the reply buffer is empty (if supplied)
     *replyBuf = '\0';
 
   while (true) {
     if (m_readState == NetWaitingForHeader) {
-      int seqNum = -1;
-      if (readHeaderFromDevice(srcBlockSizeBytes,
+      if (int seqNum = -1; readHeaderFromDevice(srcBlockSizeBytes,
                                srcBlockEOITerminated,
                                srcBlockSRQStateChanged,
-                               seqNum)) {  // header was successfully read
+                               seqNum)) {  // the header was successfully read
         ATLTRACE("readDataFromDevice: Read Header: blockSize=%d, EOI=%d, userBufferSizeBytes=%d\n",
                  srcBlockSizeBytes,
                  srcBlockEOITerminated,
@@ -527,16 +424,16 @@ uint32_t CVICPClient::readDataFromDevice(char* replyBuf, int userBufferSizeBytes
         m_readState = NetWaitingForData;
         srcBlockBytesRead = 0;
 
-        // if we're flushing unread responses, and this header contains an unexpected sequence number (older than
+        // if we are flushing unread responses, and this header contains an unexpected sequence number (older than
         // the current one), then dump this block and go around again.
-        // note that the 'seqNum != 0' test checks for the case where we're talking to a scope running pre-June 2003
-        // code that didn't support sequence numbering, and therefore we don't know when to dump data.
+        // note that the 'seqNum != 0' test checks for the case where we are talking to a scope running pre-June 2003
+        // code that did not support sequence numbering, and therefore we do not know when to dump data.
         if (m_bFlushUnreadResponses && seqNum != 0 && (GetLastSequenceNumber() > seqNum)) {
           dumpData(srcBlockSizeBytes);
           m_readState = NetWaitingForHeader;
         }
 
-        // if a non-zero sequence number was seen then assume that version '1a' of the
+        // if a non-zero sequence number was seen, then assume that version '1a' of the
         // VICP protocol is in use, supporting, in addition to sequence numbering,
         // the use of Out-of-band signalling.
         m_bVICPVersion1aSupported = (seqNum != 0);  // seq. numbers should never be zero in V1a of the protocol
@@ -559,8 +456,7 @@ uint32_t CVICPClient::readDataFromDevice(char* replyBuf, int userBufferSizeBytes
       uint32_t bytesToGo = MIN((uint32_t)userBufferSizeBytes - userBufferBytesRead,  // space free in user Buffer
                                srcBlockSizeBytes - srcBlockBytesRead);               // src bytes available
       while (bytesToGo > 0) {
-        if (bytesReceived =
-                static_cast<uint32_t>(::recv(m_socketFd, replyBuf, MIN(bytesToGo, (uint32_t)m_maxBlockSize), 0));
+        if (bytesReceived = static_cast<uint32_t>(::recv(fd_, replyBuf, MIN(bytesToGo, (uint32_t)m_maxBlockSize), 0));
             bytesReceived == -1) {
           std::cerr << "SOCKET_ERROR on recv" << std::endl;
           m_bErrorFlag = true;
@@ -608,40 +504,34 @@ uint32_t CVICPClient::readDataFromDevice(char* replyBuf, int userBufferSizeBytes
       break;
     }
   }
-
-  // keep track of size of last transfer
-  m_ibcntl = userBufferBytesRead;
-
+  m_ibcntl = userBufferBytesRead;  // keep track of size of last transfer
   //ATLTRACE("readDataFromDevice: returning %d bytes\n", userBufferBytesRead);
-
-  return (m_ibcntl);
+  return m_ibcntl;
 }
 
-bool CVICPClient::readHeaderFromDevice(uint32_t& blockSize, bool& eoiTerminated, bool& srqStateChanged, int& seqNum) {
-  std::array<unsigned char, IO_NET_HEADER_SIZE> headerBuf;
-  int recvHeaderLen = 0;
-  ::fd_set readSet = {1, {m_socketFd}};
-  ::timeval timeVal{(long)m_currentTimeout, ((long)(m_currentTimeout * 1'000'000L)) % 1'000'000L};
-  if (int numReady = ::select(m_socketFd, &readSet, NULL, NULL, &timeVal);
+bool VICPClient::readHeaderFromDevice(uint32_t& blockSize, bool& eoiTerminated, bool& srqStateChanged, int& seqNum) {
+  std::array<unsigned char, IO_NET_HEADER_SIZE> headerBuf{};
+  ::fd_set readSet = {1, {fd_}};
+  if (int numReady = ::select(fd_, &readSet, NULL, NULL, &timeout_);
       numReady != 1)  // if there is no sign of a header, get out quick (timeout)
     return false;
-  size_t headerBytesRead = 0, bytesThisTime;
+  size_t headerBytesRead = 0;
   while (headerBytesRead < IO_NET_HEADER_SIZE) {  // wait until 8 bytes are available (the entire header)
-    if (int numReady = ::select(m_socketFd, &readSet, NULL, NULL, &timeVal);
+    if (const auto numReady = ::select(fd_, &readSet, NULL, NULL, &timeout_);
         numReady != 1)  // ensure that the recv command will not block
       break;
-
-    // try to read the remainder of the header
-    bytesThisTime =
-        ::recv(m_socketFd, (char*)headerBuf.data() + headerBytesRead, headerBuf.size() - headerBytesRead, 0);
-    if (bytesThisTime > 0)
+    if (const auto bytesThisTime = ::recv(fd_,
+                                          reinterpret_cast<char*>(headerBuf.data()) + headerBytesRead,
+                                          headerBuf.size() - headerBytesRead,
+                                          0);
+        bytesThisTime > 0)  // try to read the remainder of the header
       headerBytesRead += bytesThisTime;
     if (headerBytesRead == 0)  // if we get this far without reading any part of the header, get out
       break;
   }
-
-  if (headerBytesRead == IO_NET_HEADER_SIZE) {            // receive the scope's response, header first
-    blockSize = ntohl(*((unsigned long*)&headerBuf[4]));  // extract the number of bytes contained in this packet
+  if (headerBytesRead == IO_NET_HEADER_SIZE) {              // receive the scope's response, header first
+    blockSize = ::ntohl(
+        *reinterpret_cast<unsigned long*>(&headerBuf[4]));  // extract the number of bytes contained in this packet
     if (!(headerBuf[0] & OPERATION_DATA) || headerBuf[1] != HEADER_VERSION1) {  // check the integrity of the header
       std::cerr << "Invalid Header!" << std::endl;
       m_bErrorFlag = true;
@@ -649,20 +539,13 @@ bool CVICPClient::readHeaderFromDevice(uint32_t& blockSize, bool& eoiTerminated,
       connectToDevice();       // out of sync, need to close & reopen the socket
       return false;
     }
-
-    // inform the caller of the EOI and SRQ state
-    eoiTerminated = (headerBuf[0] & OPERATION_EOI);
-    srqStateChanged = (headerBuf[0] & OPERATION_SRQ);
+    eoiTerminated = headerBuf[0] & OPERATION_EOI;  // inform the caller of the EOI and SRQ state
+    srqStateChanged = headerBuf[0] & OPERATION_SRQ;
     seqNum = headerBuf[2];  // inform the caller of the received sequence number
-
     ATLTRACE("readHeaderFromDevice: seq=%d\n", headerBuf[2]);
-  } else {
-    // error state, cannot read header. since we are out of sync,
-    // need to close & reopen the socket
-    disconnectFromDevice();
-    connectToDevice();
-    return false;
+    return true;
   }
-
-  return true;
+  disconnectFromDevice();  // error state, cannot read header. since we are out of sync,
+  connectToDevice();       // need to close & reopen the socket
+  return false;
 }

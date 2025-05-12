@@ -1,0 +1,6 @@
+file(GLOB sources *.cc)
+foreach(src ${sources})
+  get_filename_component(bin ${src} NAME_WE)
+  add_executable(${bin} ${src})
+  target_link_libraries(${bin} LeCrunch3)
+endforeach()

@@ -80,33 +80,44 @@
 #define ATLTRACE
 #define ATLTRACE2
 
-class CVICPClient {
+class VICPClient {
 public:
-  CVICPClient();
-  ~CVICPClient();
+  explicit VICPClient(const std::string& device_address);
+  virtual ~VICPClient();
 
-  u_long GetDeviceIPAddress();
-  u_long GetIPFromDNS();  ///< Lookup the IP address of a DNS name
-  bool openSocket();      ///< initialize the socket (doesn't require remote device to be connected or responding)
+  void setTimeout(float);  ///< set the timeout (in s) for all communication parts
+
+  bool openSocket();  ///< initialize the socket (doesn't require remote device to be connected or responding)
   /// connect to a network device
-  /// \note address is extracted from m_deviceAddress (specified during construction of base class)
+  /// \note address is extracted from device address (specified during construction of base class)
   bool connectToDevice();
   bool disconnectFromDevice();  ///< disconnect from a network device
-  void deviceClear();           ///< clear the device
+
+  void deviceClear();  ///< clear the device
   /// serial poll byte
   /// \note uses the new Out-Of-Band signalling technique if supported, else use the original 'in-band' technique.
   int serialPoll();
-
-  //------------------------------------------------------------------------------------------
-  // out-of band data request, used for serial polling and possibly other features in the future
+  /// out-of band data request, used for serial polling and possibly other features in the future
   bool oobDataRequest(char requestType, unsigned char* response);
-
   /// send a block of data to a network device
   /// \return false on error status
-  bool sendDataToDevice(
-      const char* message, int bytesToSend, bool eoiTermination, bool deviceClear = false, bool serialPoll = false);
+  bool sendDataToDevice(const std::string& message,
+                        bool eoiTermination,
+                        bool deviceClear = false,
+                        bool serialPoll = false);
+  /// dump data until the next header is found
+  /// \todo Handle timeout cases
+  void dumpData(int numBytes);
+  /// read block of data from a network device
+  /// \note if bFlush is requested then ignore replyBuf and userBufferSizeBytes and read all remaining data
+  /// from the current block (i.e. up to the start of the next header)
+  uint32_t readDataFromDevice(char* replyBuf, int userBufferSizeBytes, bool bFlush = false);
+  /// read header a network device
+  bool readHeaderFromDevice(uint32_t& blockSize, bool& eoiTerminated, bool& srqStateChanged, int& seqNum);
 
 private:
+  uint32_t GetDeviceIPAddress();
+  uint32_t GetIPFromDNS();  ///< Lookup the IP address of a DNS name
   /// Return the next sequence number in the range 1..255 (Note that zero is omitted intentionally)
   /// used to synchronize write/read operations, attempting to emulate the 488.2 'discard unread response'
   /// behaviour
@@ -115,32 +126,14 @@ private:
   unsigned char GetLastSequenceNumber();
   /// send a 'small' block of data to a network device
   /// \return true on error status
-  bool sendSmallDataToDevice(
-      const char* message, int bytesToSend, bool eoiTermination, bool deviceClear, bool serialPoll);
+  bool sendSmallDataToDevice(const std::string& message, bool eoiTermination, bool deviceClear, bool serialPoll);
 
-public:
-  /// dump data until the next header is found
-  /// \todo Handle timeout cases
-  void dumpData(int numBytes);
-
-  /// read block of data from a network device
-  /// \note if bFlush is requested then ignore replyBuf and userBufferSizeBytes and read all remaining data
-  /// from the current block (i.e. up to the start of the next header)
-  uint32_t readDataFromDevice(char* replyBuf, int userBufferSizeBytes, bool bFlush = false);
-
-  bool readHeaderFromDevice(uint32_t& blockSize,
-                            bool& eoiTerminated,
-                            bool& srqStateChanged,
-                            int& seqNum);  ///< read header a network device
-
-public:
-  std::string m_deviceAddress;
-  float m_currentTimeout{10};      ///< current timeout time (seconds)
+  ::timeval timeout_;
   bool m_remoteMode{false};        ///< if TRUE, device is in remote mode
   bool m_localLockout{false};      ///< if TRUE, device is in local lockout mode
   bool m_connectedToScope{false};  ///< connected to scope?
   sockaddr_in m_serverAddr;        // server's socket address
-  int m_socketFd{-1};              ///< socket file descriptor
+  int fd_{-1};                     ///< socket file descriptor
   int m_iberr{0};                  ///< emulation of GPIB counterparts
   int m_ibsta{0};                  ///< emulation of GPIB counterparts
   long m_ibcntl{0};                ///< emulation of GPIB counterparts
@@ -154,7 +147,14 @@ public:
   bool m_bErrorFlag{false};               ///< if true, error has been observed
   bool m_bVICPVersion1aSupported{false};  ///< version 1a of the VICP protocol supported (seq. numbers and OOB data)
 
-private:
+  static constexpr unsigned short SERVER_PORT_NUM = 1861;  ///< port # registered with IANA for lecroy-vicp
+  static constexpr size_t IO_NET_HEADER_SIZE = 8;          ///< size of network header
+  static constexpr size_t SMALL_DATA_BUFSIZE = 8192;
+  static constexpr unsigned long CONNECT_TIMEOUT_SECS = 2;
+  static constexpr size_t SPOLLBUFSIZE = 2;
+
+  const std::string device_address_;
+
   int m_lastSequenceNumber{1};  ///< last used sequence value
   int m_nextSequenceNumber{1};  ///< next sequence value
 };

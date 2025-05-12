@@ -16,3 +16,5 @@ file(GLOB LIBRARY_SOURCES src/*.cc)
 
 add_library(LeCrunch3 SHARED ${LIBRARY_SOURCES})
 target_link_libraries(LeCrunch3 ${EXT_LIBRARIES})
+
+add_subdirectory(test)
