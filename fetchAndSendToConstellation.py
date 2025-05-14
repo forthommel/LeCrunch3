@@ -113,15 +113,14 @@ class LeCrunchSatellite(DataSender):
                 for channel in self._channels:
                     wave_desc, trg_times, trg_offsets, wave_array = self._scope.get_waveform_all(channel)
                     if first_channel:
-                        trigger_header = trg_times
-                        self.data_queue.put((trigger_header.tobytes(), {'dtype': f'{trigger_header.dtype}'}))
+                        event_payload = trg_times
                         first_channel = False
                     num_samples = wave_desc['wave_array_count']//self._num_sequences
                     wave_array = wave_desc['vertical_offset'] + wave_array * wave_desc['vertical_gain']  # already transform to V
-                    channel_header = trg_offsets
-                    channel_header = np.append(channel_header, num_samples)
-                    self.data_queue.put((channel_header.tobytes(), {'dtype': f'{channel_header.dtype}'}))
-                    self.data_queue.put((wave_array.tobytes(), {'dtype': f'{wave_array.dtype}'}))
+                    event_payload = np.append(event_payload, trg_offsets)
+                    event_payload = np.append(event_payload, num_samples)
+                    event_payload = np.append(event_payload, wave_array)
+                self.data_queue.put((event_payload.tobytes(), {'dtype': f'{event_payload.dtype}'}))
             except (socket.error, struct.error) as e:
                 self.log.error(str(e))
                 self._scope.clear()
