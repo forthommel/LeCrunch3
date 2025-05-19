@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "LeCrunch3"
-version = "3.0.1"
+version = "3.0.2"
 description = "A Python tool to control a LeCroy scope and to acquire/process data"
 readme = "README.md"
 authors = [

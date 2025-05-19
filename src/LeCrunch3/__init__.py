@@ -1,3 +1,5 @@
 #!/usr/bin/python
 
-__version__ = "3.0.0"
+from .LeCrunch3 import LeCrunch3
+
+__version__ = "3.0.2"
