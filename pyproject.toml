@@ -21,10 +21,7 @@ classifiers = [
 ]
 keywords = ["lecroy", "oscilloscope", "waveform"]
 dependencies = [
-    "array",
-    "struct",
     "numpy",
-    "socket"
 ]
 requires-python = ">=3.1"
 
