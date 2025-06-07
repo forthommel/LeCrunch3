@@ -2,4 +2,4 @@
 
 from .LeCrunch3 import LeCrunch3
 
-__version__ = "3.0.2"
+__version__ = "3.0.3"
